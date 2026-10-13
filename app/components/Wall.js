@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadConfig, loadArts } from "../../lib/supabase";
-import { playScore, audio, COLORS } from "../../lib/sound";
+import { playDrawing, audio, COLORS } from "../../lib/sound";
 import Picker from "./Picker";
 import Pad from "./Pad";
 import Viewer from "./Viewer";
@@ -96,7 +96,7 @@ export default function Wall() {
 
   const onSaved = (art) => {
     setPick(null); merge([art]); setMine(art.id);
-    if (art.music !== false) playScore(art.strokes || []); // 음악 그림이면 전시되며 한 번 연주
+    if (art.music !== false) playDrawing(art.strokes || []); // 음악 그림이면 전시되며 한 번 연주
     setTimeout(() => setMine(null), 8000);
   };
 

@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { COLORS, noteForY, playNote, playScore, audio } from "../../lib/sound";
-import { drawShape, drawStrokes, loadImg, drawContain } from "../../lib/shapes";
+import { COLORS, noteForY, playNote, playDrawing, audio, STEP, MIN_GAP } from "../../lib/sound";
+import { drawShape, drawStrokes, drawTimedUpTo, loadImg, drawContain } from "../../lib/shapes";
 import { addArt, uploadFile } from "../../lib/supabase";
 
 const LINE = 0.024; // 선 굵기(도화지 높이 대비) — 영아 손가락에 맞게 굵게
@@ -13,10 +13,11 @@ export default function Pad({ pick, onClose, onSaved }) {
   const wrap = useRef(null);
   const guide = useRef(null);
   const cvs = useRef(null);
-  const scan = useRef(null);
   const strokes = useRef([]);
   const live = useRef(new Map()); // 손가락마다 그리는 중인 선 (여러 아이가 동시에)
-  const lastNote = useRef(new Map());
+  const lastNote = useRef(new Map()); // 손가락마다 {t: 마지막 음 시각, acc: 그 뒤 움직인 거리}
+  const t0 = useRef(null);              // 처음 그리기 시작한 시각 (선마다 언제 그렸는지 기록)
+  const strokeStart = useRef(new Map());
   const guideImg = useRef(null);
   const stopPlay = useRef(null);
   const [box, setBox] = useState({ w: 800, h: 450 });
@@ -67,34 +68,44 @@ export default function Pad({ pick, onClose, onSaved }) {
     const r = cvs.current.getBoundingClientRect();
     return [r3(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))), r3(Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)))];
   };
-  const sound = (id, y) => {
+  // 그리는 소리: 펜이 STEP만큼 움직일 때마다 한 음 → 빨리 그리면 빠르게, 천천히 그리면 천천히 (연주할 때와 같은 규칙)
+  const sound = (id, y, d) => {
     if (mode !== "music") return;
     const now = performance.now();
-    if (now - (lastNote.current.get(id) || 0) < 140) return;
-    lastNote.current.set(id, now);
-    const inst = COLORS[color].inst;
-    playNote(noteForY(y, inst), inst, undefined, 0.7);
+    const st = lastNote.current.get(id) || { t: -1e9, acc: 0, first: true };
+    st.acc += d;
+    if ((st.first || st.acc >= STEP) && now - st.t >= MIN_GAP) {
+      const inst = COLORS[color].inst;
+      playNote(noteForY(y, inst), inst, undefined, 0.7);
+      st.t = now; st.acc = 0; st.first = false;
+    }
+    lastNote.current.set(id, st);
   };
   const down = (e) => {
     if (phase !== "draw") return;
     e.preventDefault(); audio();
     try { cvs.current.setPointerCapture?.(e.pointerId); } catch {} // 손가락이 도화지 밖으로 나가도 선이 이어지게
-    const p = pos(e);
-    const s = { c: color, w: LINE, p: [p] };
+    const now = performance.now();
+    if (t0.current == null) t0.current = now;
+    const p = [...pos(e), 0];
+    const s = { c: color, w: LINE, t0: Math.round(now - t0.current), p: [p] };
     live.current.set(e.pointerId, s);
-    lastNote.current.set(e.pointerId, 0);
-    sound(e.pointerId, p[1]);
+    strokeStart.current.set(e.pointerId, now);
+    lastNote.current.delete(e.pointerId);
+    sound(e.pointerId, p[1], 0);
     redraw();
   };
   const move = (e) => {
     const s = live.current.get(e.pointerId); if (!s) return;
     e.preventDefault();
     const p = pos(e); const q = s.p[s.p.length - 1];
-    if (Math.hypot(p[0] - q[0], (p[1] - q[1]) * 0.5625) < 0.004) return; // 너무 촘촘한 점은 버림
+    const d = Math.hypot(p[0] - q[0], (p[1] - q[1]) * 0.5625);
+    if (d < 0.004) return; // 너무 촘촘한 점은 버림
+    p.push(Math.round(performance.now() - strokeStart.current.get(e.pointerId))); // 이 선을 그리기 시작하고 몇 ms 뒤인지
     s.p.push(p);
     const x = ctx2d(); x.lineCap = "round"; x.strokeStyle = COLORS[s.c].c; x.lineWidth = s.w * box.h;
     x.beginPath(); x.moveTo(q[0] * box.w, q[1] * box.h); x.lineTo(p[0] * box.w, p[1] * box.h); x.stroke();
-    sound(e.pointerId, p[1]);
+    sound(e.pointerId, p[1], d);
   };
   const up = (e) => {
     const s = live.current.get(e.pointerId); if (!s) return;
@@ -103,19 +114,20 @@ export default function Pad({ pick, onClose, onSaved }) {
   };
 
   const undo = () => { strokes.current.pop(); setCount(strokes.current.length); redraw(); };
-  const clear = () => { strokes.current = []; setCount(0); redraw(); };
+  const clear = () => { strokes.current = []; t0.current = null; setCount(0); redraw(); };
 
   // 연주: 빛줄이 왼쪽→오른쪽
   const play = (then) => {
     if (!strokes.current.length) return setErr("먼저 그림을 그려 주세요 🖍️");
     setErr(""); stopPlay.current?.(); setPhase("playing");
-    stopPlay.current = playScore(strokes.current, {
-      onFrame: (t) => { if (scan.current) scan.current.style.left = `${t * 100}%`; },
-      onEnd: () => { if (scan.current) scan.current.style.left = "-10%"; setPhase(then || "draw"); },
+    // 그린 순서·빠르기 그대로 선이 다시 그려지며 소리가 난다
+    stopPlay.current = playDrawing(strokes.current, {
+      onFrame: (ms, tl) => { const x = ctx2d(); x.clearRect(0, 0, box.w, box.h); drawTimedUpTo(x, tl.timed, ms, box.w, box.h, COLORS); },
+      onEnd: () => { redraw(); setPhase(then || "draw"); },
     });
   };
   useEffect(() => () => stopPlay.current?.(), []);
-  const stop = () => { stopPlay.current?.(); if (scan.current) scan.current.style.left = "-10%"; setPhase("draw"); };
+  const stop = () => { stopPlay.current?.(); redraw(); setPhase("draw"); };
 
   // 전시용 그림: 바탕 없이 그린 모양만(투명 PNG), 그린 곳만 잘라서. 밑그림 점선은 빼고 선생님 그림은 넣음
   const exportPng = async () => {
@@ -156,7 +168,6 @@ export default function Pad({ pick, onClose, onSaved }) {
           <canvas ref={guide} style={{ width: box.w, height: box.h }} />
           <canvas ref={cvs} className="ink" style={{ width: box.w, height: box.h }}
             onPointerDown={down} onPointerMove={move} onPointerUp={up} onPointerCancel={up} />
-          <div className="scan" ref={scan} />
         </div>
       </div>
 
