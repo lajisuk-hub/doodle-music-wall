@@ -1,0 +1,7 @@
+node_modules
+.next
+.env*.local
+.vercel
+npm.log
+vercel-deploy.log
+public/_test
