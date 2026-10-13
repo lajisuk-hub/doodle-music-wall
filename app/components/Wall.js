@@ -2,12 +2,26 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { loadConfig, loadArts } from "../../lib/supabase";
-import { playScore, audio } from "../../lib/sound";
+import { playScore, audio, COLORS } from "../../lib/sound";
 import Picker from "./Picker";
 import Pad from "./Pad";
 import Viewer from "./Viewer";
 
 const MAX_SHOWN = 30; // 벽에 동시에 떠 있는 그림 수 (최근 것부터)
+// 예전 방식(흰 종이째 저장)의 그림도 모양만 보이게: 선 기록을 그 자리에서 그림(SVG)으로
+function StrokeShape({ strokes, maxW, maxH }) {
+  let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+  for (const s of strokes) for (const [x, y] of s.p) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+  const W = 1600, H = 900, pad = 0.03 * H;
+  const vb = [x0 * W - pad, y0 * H - pad, (x1 - x0) * W + pad * 2, (y1 - y0) * H + pad * 2];
+  return (
+    <svg viewBox={vb.join(" ")} style={{ width: Math.min(maxW, (maxH * vb[2]) / vb[3]) }} className="shape">
+      {strokes.map((s, i) => (
+        <polyline key={i} points={s.p.map(([x, y]) => `${x * W},${y * H}`).join(" ")} fill="none" stroke={COLORS[s.c]?.c || "#333"} strokeWidth={s.w * H} strokeLinecap="round" strokeLinejoin="round" />
+      ))}
+    </svg>
+  );
+}
 const hash = (s) => [...s].reduce((a, c) => (a * 31 + c.charCodeAt(0)) >>> 0, 7);
 
 // 첫 화면: 선생님이 고른 배경 위에 아이들 그림이 둥둥. 누르면 크게 + 음악
@@ -44,7 +58,7 @@ export default function Wall() {
     return () => { stop = true; clearInterval(id); clearInterval(id2); };
   }, [merge]);
 
-  const shown = useMemo(() => arts.filter((a) => !a.hidden && a.img).sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, MAX_SHOWN), [arts]);
+  const shown = useMemo(() => arts.filter((a) => !a.hidden && a.img).map((a) => (!a.cut && !a.guideImg && a.strokes?.length ? { ...a, cut: true, svg: true } : a)).sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, MAX_SHOWN), [arts]);
 
   // 자리 배치: 화면을 칸으로 나눠 고르게, 아래쪽 단추 자리는 비움
   const n = shown.length;
@@ -82,7 +96,7 @@ export default function Wall() {
 
   const onSaved = (art) => {
     setPick(null); merge([art]); setMine(art.id);
-    playScore(art.strokes || []); // 전시되며 한 번 연주
+    if (art.music !== false) playScore(art.strokes || []); // 음악 그림이면 전시되며 한 번 연주
     setTimeout(() => setMine(null), 8000);
   };
 
@@ -93,12 +107,12 @@ export default function Wall() {
         <button
           key={p.id}
           ref={(el) => (el ? els.current.set(p.id, el) : els.current.delete(p.id))}
-          className={`art${p.id === mine ? " mine" : ""}`}
-          style={{ width: cardW }}
+          className={`art${p.cut ? " cut" : ""}${p.id === mine ? " mine" : ""}`}
+          style={p.cut ? { maxWidth: cardW, "--mh": `${Math.round(cardW * 0.8)}px` } : { width: cardW }}
           onClick={() => { audio(); setOpen(p); }}
         >
-          <img src={p.img} alt="" draggable={false} loading="lazy" />
-          <i>🎵</i>
+          {p.svg ? <StrokeShape strokes={p.strokes} maxW={cardW} maxH={Math.round(cardW * 0.8)} /> : <img src={p.img} alt="" draggable={false} loading="lazy" />}
+          {p.music !== false && <i>🎵</i>}
         </button>
       ))}
       {!n && cfg && <div className="empty">아직 그림이 없어요. 첫 번째 그림을 그려 볼까요? 🖍️</div>}

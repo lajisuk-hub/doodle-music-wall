@@ -23,13 +23,15 @@ export default function Pad({ pick, onClose, onSaved }) {
   const [color, setColor] = useState(0);
   const [count, setCount] = useState(0);
   const [phase, setPhase] = useState("draw"); // draw | playing | ask | saving
+  const [mode, setMode] = useState("doodle"); // doodle(끼적이기, 소리 없음) | music(선으로 연주하기)
   const [err, setErr] = useState("");
 
   // 도화지 크기: 남는 공간에 16:9로 꽉
   useEffect(() => {
     const on = () => {
       const el = wrap.current; if (!el) return;
-      const W = el.clientWidth, H = el.clientHeight;
+      const cs = getComputedStyle(el); // 여백(위 모드 단추 자리)을 빼고 남는 크기
+      const W = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight), H = el.clientHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
       const w = Math.min(W, (H * 16) / 9);
       setBox({ w: Math.floor(w), h: Math.floor((w * 9) / 16) });
     };
@@ -66,6 +68,7 @@ export default function Pad({ pick, onClose, onSaved }) {
     return [r3(Math.max(0, Math.min(1, (e.clientX - r.left) / r.width))), r3(Math.max(0, Math.min(1, (e.clientY - r.top) / r.height)))];
   };
   const sound = (id, y) => {
+    if (mode !== "music") return;
     const now = performance.now();
     if (now - (lastNote.current.get(id) || 0) < 140) return;
     lastNote.current.set(id, now);
@@ -114,19 +117,31 @@ export default function Pad({ pick, onClose, onSaved }) {
   useEffect(() => () => stopPlay.current?.(), []);
   const stop = () => { stopPlay.current?.(); if (scan.current) scan.current.style.left = "-10%"; setPhase("draw"); };
 
-  // 전시용 그림(960×540, 밑그림 점선은 빼고 선생님 그림은 넣음)
-  const exportJpg = async () => {
-    const W = 960, H = 540, o = document.createElement("canvas"); o.width = W; o.height = H;
-    const x = o.getContext("2d"); x.fillStyle = "#fffdf7"; x.fillRect(0, 0, W, H);
-    if (pick.kind === "img" && guideImg.current) drawContain(x, guideImg.current, W, H);
+  // 전시용 그림: 바탕 없이 그린 모양만(투명 PNG), 그린 곳만 잘라서. 밑그림 점선은 빼고 선생님 그림은 넣음
+  const exportPng = async () => {
+    const W = 1280, H = 720, o = document.createElement("canvas"); o.width = W; o.height = H;
+    const x = o.getContext("2d");
+    let x0 = 1, y0 = 1, x1 = 0, y1 = 0;
+    if (pick.kind === "img" && guideImg.current) {
+      const im = guideImg.current, k = Math.min((W * 0.92) / im.width, (H * 0.92) / im.height);
+      const iw = (im.width * k) / W, ih = (im.height * k) / H;
+      x0 = (1 - iw) / 2; y0 = (1 - ih) / 2; x1 = 1 - x0; y1 = 1 - y0;
+      drawContain(x, im, W, H);
+    }
+    for (const st of strokes.current) for (const [px, py] of st.p) { x0 = Math.min(x0, px); y0 = Math.min(y0, py); x1 = Math.max(x1, px); y1 = Math.max(y1, py); }
     drawStrokes(x, strokes.current, W, H, COLORS);
-    return new Promise((ok) => o.toBlob(ok, "image/jpeg", 0.88));
+    const pad = LINE * H;
+    const cx = Math.max(0, Math.floor(x0 * W - pad)), cy = Math.max(0, Math.floor(y0 * H - pad));
+    const cw = Math.min(W, Math.ceil(x1 * W + pad)) - cx, ch = Math.min(H, Math.ceil(y1 * H + pad)) - cy;
+    const c = document.createElement("canvas"); c.width = Math.max(1, cw); c.height = Math.max(1, ch);
+    c.getContext("2d").drawImage(o, cx, cy, cw, ch, 0, 0, cw, ch);
+    return new Promise((ok) => c.toBlob(ok, "image/png"));
   };
   const save = async () => {
     setPhase("saving"); setErr("");
     try {
-      const img = await uploadFile("art", await exportJpg(), "jpg", "image/jpeg");
-      const art = await addArt({ img, strokes: strokes.current, guideImg: pick.kind === "img" ? pick.url : "" });
+      const img = await uploadFile("art", await exportPng(), "png", "image/png");
+      const art = await addArt({ img, cut: true, music: mode === "music", strokes: strokes.current, guideImg: pick.kind === "img" ? pick.url : "" });
       onSaved(art);
     } catch (e) {
       setErr("전시하지 못했어요. 잠시 뒤 다시 눌러 주세요."); setPhase("ask");
@@ -147,7 +162,7 @@ export default function Pad({ pick, onClose, onSaved }) {
 
       {phase === "ask" || phase === "saving" ? (
         <div className="pad-bar ask">
-          <button className="big ghost" onClick={() => play("ask")} disabled={phase === "saving"}>🔁 다시 듣기</button>
+          {mode === "music" && <button className="big ghost" onClick={() => play("ask")} disabled={phase === "saving"}>🔁 다시 듣기</button>}
           <button className="big ghost" onClick={() => setPhase("draw")} disabled={phase === "saving"}>✏️ 더 그릴래요</button>
           <button className="big go" onClick={save} disabled={phase === "saving"}>{phase === "saving" ? "전시하는 중…" : "🎉 전시해요!"}</button>
         </div>
@@ -156,21 +171,27 @@ export default function Pad({ pick, onClose, onSaved }) {
           <div className="colors">
             {COLORS.map((c, i) => (
               <button key={c.c} className={`dot${color === i ? " on" : ""}`} style={{ "--c": c.c }} onClick={() => setColor(i)} aria-label={`${c.name} · ${c.label}`}>
-                <span>{c.label}</span>
+                {mode === "music" && <span>{c.label}</span>}
               </button>
             ))}
           </div>
           <div className="tools">
             <button className="tool" onClick={undo} disabled={!count || phase !== "draw"}>↶<small>되돌리기</small></button>
             <button className="tool" onClick={clear} disabled={!count || phase !== "draw"}>🗑<small>다 지우기</small></button>
-            {phase === "playing"
+            {mode === "music" && (phase === "playing"
               ? <button className="tool play" onClick={stop}>■<small>멈추기</small></button>
-              : <button className="tool play" onClick={() => play()}>▶<small>연주</small></button>}
-            <button className="tool done" onClick={() => play("ask")} disabled={phase !== "draw"}>✅<small>다 그렸어요</small></button>
+              : <button className="tool play" onClick={() => play()}>▶<small>연주</small></button>)}
+            <button className="tool done" disabled={phase !== "draw"}
+              onClick={() => (mode === "music" ? play("ask") : strokes.current.length ? setPhase("ask") : setErr("먼저 그림을 그려 주세요 🖍️"))}>✅<small>다 그렸어요</small></button>
           </div>
         </div>
       )}
-      {phase === "ask" && <div className="pad-ask">이 그림을 전시할까요? 🎨🎵</div>}
+      {phase === "ask" ? <div className="pad-ask">이 그림을 전시할까요? {mode === "music" ? "🎨🎵" : "🎨"}</div> : (
+        <div className="mode">
+          <button className={mode === "doodle" ? "on" : ""} disabled={phase === "playing"} onClick={() => setMode("doodle")}>🖍️ 끼적이기</button>
+          <button className={mode === "music" ? "on" : ""} disabled={phase === "playing"} onClick={() => { audio(); setMode("music"); }}>🎵 선으로 연주하기</button>
+        </div>
+      )}
       {err && <div className="pad-err" onClick={() => setErr("")}>{err}</div>}
     </div>
   );

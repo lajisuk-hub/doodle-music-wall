@@ -5,3 +5,5 @@ node_modules
 npm.log
 vercel-deploy.log
 public/_test
+
+.vercel
