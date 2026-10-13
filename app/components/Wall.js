@@ -6,6 +6,7 @@ import { playDrawing, audio, COLORS } from "../../lib/sound";
 import Picker from "./Picker";
 import Pad from "./Pad";
 import Viewer from "./Viewer";
+import Guide from "./Guide";
 
 const MAX_SHOWN = 30; // 벽에 동시에 떠 있는 그림 수 (최근 것부터)
 // 예전 방식(흰 종이째 저장)의 그림도 모양만 보이게: 선 기록을 그 자리에서 그림(SVG)으로
@@ -32,11 +33,16 @@ export default function Wall() {
   const [picker, setPicker] = useState(false);
   const [pick, setPick] = useState(null);
   const [open, setOpen] = useState(null);
+  const [guide, setGuide] = useState(false);
   const [mine, setMine] = useState(null);
   const [scr, setScr] = useState({ w: 1600, h: 900 });
   const since = useRef(null);
   const els = useRef(new Map());
 
+  // 사용법 팝업: 이 창에서 처음 열 때 한 번 (❓ 단추로 언제든 다시)
+  useEffect(() => {
+    try { if (!sessionStorage.getItem("dw-guide")) { setGuide(true); sessionStorage.setItem("dw-guide", "1"); } } catch { setGuide(true); }
+  }, []);
   useEffect(() => {
     loadConfig().then(setCfg).catch((e) => setErr("보관소에 연결하지 못했어요. 잠시 뒤 새로고침해 주세요. (" + e.message + ")"));
     const on = () => setScr({ w: window.innerWidth, h: window.innerHeight });
@@ -120,12 +126,14 @@ export default function Wall() {
 
       <button className="draw-btn" onClick={() => { audio(); setPicker(true); }}>🖍️ 그림 그리기</button>
       <a className="teacher-link" href="/teacher" aria-label="선생님 화면">⚙</a>
+      <button className="help-btn" onClick={() => setGuide(true)} aria-label="사용법">❓ 사용법</button>
       <button className="fs-btn" onClick={() => (document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.())} aria-label="전체 화면">⛶</button>
     </main>
 
       {picker && <Picker guides={cfg?.guides || []} onClose={() => setPicker(false)} onPick={(p) => { setPicker(false); setPick(p); }} />}
       {pick && <Pad pick={pick} onClose={() => setPick(null)} onSaved={onSaved} />}
       {open && <Viewer art={open} onClose={() => setOpen(null)} />}
+      {guide && <Guide onClose={() => setGuide(false)} />}
     </>
   );
 }
